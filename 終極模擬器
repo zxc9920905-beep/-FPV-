@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>終極 FPV PID 模擬器 (Betaflight 深度分析版)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #0f111a;
+            --panel-bg: #1a1d27;
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --border: #334155;
+            --danger: #ef4444;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --bf-p: #eab308;
+            --bf-i: #ec4899;
+            --bf-d: #8b5cf6;
+            --bf-ff: #14b8a6;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 15px;
+            font-size: 14px;
+        }
+        .container { max-width: 1600px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 15px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+        h1 { margin: 0 0 5px 0; font-size: 24px; color: var(--text-main); }
+        .subtitle { color: var(--text-muted); margin: 0; }
+        
+        .layout { display: flex; gap: 15px; }
+        
+        /* 左側控制面板 */
+        .sidebar { flex: 0 0 350px; display: flex; flex-direction: column; gap: 10px; height: calc(100vh - 80px); overflow-y: auto; padding-right: 5px; }
+        
+        /* 右側圖表與分析 */
+        .main-content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; height: calc(100vh - 80px); }
+
+        /* 卡片設計 */
+        .card { background: var(--panel-bg); border-radius: 8px; border: 1px solid var(--border); padding: 12px; }
+        .card-header { font-size: 14px; font-weight: 600; color: var(--accent); margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+
+        /* 控制項 */
+        .control-group { margin-bottom: 12px; }
+        .control-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+        .label-text { font-size: 13px; color: #cbd5e1; }
+        .val-badge { background: #1e293b; color: var(--accent); padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; font-weight: bold; }
+        
+        /* Betaflight 滑桿風格 */
+        input[type="range"] { width: 100%; height: 4px; background: #334155; border-radius: 2px; outline: none; -webkit-appearance: none; margin: 6px 0; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; background: var(--accent); border-radius: 50%; cursor: pointer; }
+        .slider-p::-webkit-slider-thumb { background: var(--bf-p); }
+        .slider-i::-webkit-slider-thumb { background: var(--bf-i); }
+        .slider-d::-webkit-slider-thumb { background: var(--bf-d); }
+        .slider-ff::-webkit-slider-thumb { background: var(--bf-ff); }
+        
+        /* 輸入框與按鈕 */
+        select, input[type="number"] { width: 100%; padding: 6px; background: #0f111a; border: 1px solid var(--border); color: var(--text-main); border-radius: 4px; font-size: 13px; margin-bottom: 5px; }
+        .btn-group { display: flex; gap: 8px; margin-top: 8px; }
+        button { flex: 1; padding: 6px 12px; border: none; border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; background: #1e293b; color: var(--text-main); border: 1px solid var(--border); }
+        button:hover { background: #334155; }
+        .btn-primary { background: var(--accent); color: white; border: none; }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-danger { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.5); }
+        .btn-danger:hover { background: rgba(239, 68, 68, 0.4); }
+
+        /* 搖桿輸入區特別設計 */
+        .stick-container { background: #0f111a; border: 1px solid var(--border); border-radius: 6px; padding: 15px 10px; margin-top: 10px; text-align: center; }
+        .stick-visual { width: 100%; height: 20px; background: #1e293b; border-radius: 10px; position: relative; margin: 15px 0; }
+        .stick-cursor { width: 20px; height: 30px; background: white; border-radius: 4px; position: absolute; top: -5px; left: 50%; transform: translateX(-50%); box-shadow: 0 0 5px rgba(0,0,0,0.5); transition: left 0.1s; }
+        .stick-center-mark { width: 2px; height: 10px; background: var(--text-muted); position: absolute; left: 50%; top: 5px; transform: translateX(-50%); }
+
+        /* 儀表板 */
+        .metrics-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+        .metric-box { background: var(--panel-bg); padding: 10px; border-radius: 6px; border: 1px solid var(--border); text-align: center; }
+        .metric-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
+        .metric-value { font-size: 18px; font-weight: bold; font-family: monospace; }
+        .metric-unit { font-size: 11px; color: #64748b; margin-left: 2px; }
+
+        /* PID 輸出佔比條 */
+        .pid-bar-container { width: 100%; height: 12px; background: #0f111a; border-radius: 6px; display: flex; overflow: hidden; margin-top: 5px; border: 1px solid var(--border); }
+        .pid-bar-segment { height: 100%; transition: width 0.1s; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: bold; color: black; }
+
+        /* 圖表區 */
+        .chart-wrapper { position: relative; width: 100%; flex: 1; min-height: 200px; }
+        .chart-card { flex: 1; display: flex; flex-direction: column; }
+        
+        /* 滾動條美化 */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg-color); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h1>終極 FPV PID 模擬器</h1>
+        <p class="subtitle">Betaflight 完整重現：RC Rate、油門非線性、D-Term 濾波、Overshoot 分析與 PID 佔比</p>
+    </div>
+
+    <div class="layout">
+        <!-- 左側面板 -->
+        <div class="sidebar">
+            
+            <!-- 1. Preset 預設組 -->
+            <div class="card">
+                <div class="card-header">📋 Profile (機型與 PID 預設)</div>
+                <select id="profile_select" onchange="loadProfile()">
+                    <option value="sub250">羽量級 (牙籤機, ~150g, 敏捷/易震)</option>
+                    <option value="5inch_fs" selected>5 吋 Freestyle (帶狗, ~650g, 標準)</option>
+                    <option value="7inch_lr">7 吋 Long Range (~1200g, 慣性大)</option>
+                    <option value="cinelifter">8 吋 Cinelifter (~3500g, 極重/難煞)</option>
+                </select>
+                <div class="control-row" style="margin-top: 8px;">
+                    <span class="label-text">自訂起飛重量 (g):</span>
+                    <input type="number" id="weight_input" value="650" style="width: 80px; margin:0;" onchange="updatePhysicsParams()">
+                </div>
+            </div>
+
+            <!-- 2. RC 輸入與油門 -->
+            <div class="card">
+                <div class="card-header">🎮 搖桿輸入 (RC Command & Throttle)</div>
+                
+                <div class="control-row">
+                    <span class="label-text">油門 (Throttle) - 影響推力響應</span>
+                    <span id="thr_val" class="val-badge">30%</span>
+                </div>
+                <input type="range" id="thr" min="5" max="100" value="30" oninput="updateVal('thr', this.value, '%')">
+                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">* 低油門時馬達反應較鈍，高油門極靈敏。</div>
+
+                <div class="control-row">
+                    <span class="label-text">RC Rate (Max: <span id="max_rate_val">800</span>°/s)</span>
+                </div>
+                <input type="range" id="rc_rate" min="0.5" max="2.5" step="0.1" value="1.0" oninput="calcRates()">
+                
+                <div class="stick-container">
+                    <div style="font-size: 12px; color: var(--text-muted);">Roll 搖桿位置 (-100% ~ 100%)</div>
+                    <div class="stick-visual" id="stick_track" onmousedown="startDrag(event)" onmousemove="drag(event)" onmouseup="endDrag()" onmouseleave="endDrag()">
+                        <div class="stick-center-mark"></div>
+                        <div class="stick-cursor" id="stick_cursor"></div>
+                    </div>
+                    <div style="font-size: 18px; font-weight: bold; color: white;" id="target_rate_display">0 °/s</div>
+                    <div class="btn-group">
+                        <button onclick="setStick(-100)">滿舵左</button>
+                        <button onclick="setStick(0)">回中</button>
+                        <button onclick="setStick(100)">滿舵右</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3. PID Tuning -->
+            <div class="card">
+                <div class="card-header">⚙️ PID Tuning (Roll 軸)</div>
+                
+                <div class="control-group">
+                    <div class="control-row">
+                        <span class="label-text">Proportional (P)</span>
+                        <span id="kp_val" class="val-badge" style="color: var(--bf-p)">45</span>
+                    </div>
+                    <input type="range" class="slider-p" id="kp" min="10" max="150" value="45" oninput="updateVal('kp', this.value, '')">
+                </div>
+                
+                <div class="control-group">
+                    <div class="control-row">
+                        <span class="label-text">Integral (I)</span>
+                        <span id="ki_val" class="val-badge" style="color: var(--bf-i)">85</span>
+                    </div>
+                    <input type="range" class="slider-i" id="ki" min="10" max="200" value="85" oninput="updateVal('ki', this.value, '')">
+                </div>
+                
+                <div class="control-group">
+                    <div class="control-row">
+                        <span class="label-text">Derivative (D)</span>
+                        <span id="kd_val" class="val-badge" style="color: var(--bf-d)">35</span>
+                    </div>
+                    <input type="range" class="slider-d" id="kd" min="0" max="100" value="35" oninput="updateVal('kd', this.value, '')">
+                </div>
+
+                <div class="control-group">
+                    <div class="control-row">
+                        <span class="label-text">Feedforward (FF)</span>
+                        <span id="ff_val" class="val-badge" style="color: var(--bf-ff)">100</span>
+                    </div>
+                    <input type="range" class="slider-ff" id="ff" min="0" max="250" value="100" oninput="updateVal('ff', this.value, '')">
+                </div>
+            </div>
+
+            <!-- 4. 飛控真實細節 -->
+            <div class="card">
+                <div class="card-header">🧠 飛控濾波與環境</div>
+                <div class="control-row">
+                    <span class="label-text">D-Term LPF (低通濾波)</span>
+                    <span id="lpf_val" class="val-badge">70 Hz</span>
+                </div>
+                <input type="range" id="lpf" min="20" max="150" value="70" oninput="updateVal('lpf', this.value, ' Hz')">
+                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">* 頻率越低越滑順，但延遲越大，D 會煞不住。</div>
+
+                <div class="control-row">
+                    <span class="label-text">環境風切雜訊</span>
+                    <span id="wind_val" class="val-badge">0 %</span>
+                </div>
+                <input type="range" id="wind" min="0" max="100" value="0" oninput="updateVal('wind', this.value, ' %')">
+                
+                <div class="btn-group">
+                    <button class="btn-primary" id="toggleBtn" onclick="toggleSim()">⏸️ 暫停</button>
+                    <button class="btn-danger" onclick="resetSim()">🔄 重置</button>
+                </div>
+            </div>
+            
+        </div>
+
+        <!-- 右側主內容 -->
+        <div class="main-content">
+            
+            <!-- Metrics 儀表板 -->
+            <div class="metrics-grid">
+                <div class="metric-box">
+                    <div class="metric-title">目標 (Setpoint)</div>
+                    <div class="metric-value" id="sp_display" style="color: white;">0<span class="metric-unit">°/s</span></div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-title">實際 (Gyro)</div>
+                    <div class="metric-value" id="pv_display" style="color: var(--danger);">0<span class="metric-unit">°/s</span></div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-title">馬達推力 (Motor)</div>
+                    <div class="metric-value" id="cv_display" style="color: var(--accent);">0<span class="metric-unit">%</span></div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-title">最大超調 (Overshoot)</div>
+                    <div class="metric-value" id="os_display" style="color: var(--warning);">0<span class="metric-unit">%</span></div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-title">誤差積分 (IAE)</div>
+                    <div class="metric-value" id="iae_display">0.0</div>
+                </div>
+            </div>
+
+            <!-- PID 佔比條 -->
+            <div class="card" style="padding: 8px 12px;">
+                <div style="font-size: 12px; color: var(--text-muted); display: flex; justify-content: space-between;">
+                    <span>即時 PID 輸出佔比 (絕對值)</span>
+                    <span id="pid_sum_display">Total: 0%</span>
+                </div>
+                <div class="pid-bar-container">
+                    <div id="bar_p" class="pid-bar-segment" style="background: var(--bf-p); width: 0%;"></div>
+                    <div id="bar_i" class="pid-bar-segment" style="background: var(--bf-i); width: 0%;"></div>
+                    <div id="bar_d" class="pid-bar-segment" style="background: var(--bf-d); width: 0%;"></div>
+                    <div id="bar_ff" class="pid-bar-segment" style="background: var(--bf-ff); width: 0%;"></div>
+                </div>
+            </div>
+
+            <!-- 圖表 1: 角速度追蹤 -->
+            <div class="card chart-card">
+                <div class="card-header" style="margin-bottom: 5px;">📈 姿態追蹤 (Rate Tracking)</div>
+                <div class="chart-wrapper">
+                    <canvas id="rateChart"></canvas>
+                </div>
+            </div>
+            
+            <!-- 圖表 2: PID 輸出分析 -->
+            <div class="card chart-card">
+                <div class="card-header" style="margin-bottom: 5px;">⚡ PID 輸出分析 (Blackbox 視角)</div>
+                <div class="chart-wrapper">
+                    <canvas id="motorChart"></canvas>
+                </div>
+            </div>
+            
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- Profile 資料 ---
+    const profiles = {
+        'sub250': { w: 150, p: 35, i: 60, d: 25, ff: 90 },
+        '5inch_fs': { w: 650, p: 45, i: 85, d: 35, ff: 100 },
+        '7inch_lr': { w: 1200, p: 55, i: 100, d: 50, ff: 130 },
+        'cinelifter': { w: 3500, p: 70, i: 120, d: 75, ff: 180 }
+    };
+
+    function loadProfile() {
+        const p = profiles[document.getElementById('profile_select').value];
+        document.getElementById('weight_input').value = p.w;
+        setSlider('kp', p.p); setSlider('ki', p.i); setSlider('kd', p.d); setSlider('ff', p.ff);
+        updatePhysicsParams();
+    }
+
+    function setSlider(id, val) {
+        document.getElementById(id).value = val;
+        updateVal(id, val, '');
+    }
+
+    // --- 搖桿輸入與 RC Rate ---
+    let stick_percent = 0; // -100 to 100
+    let isDragging = false;
+    let target_rate_deg = 0;
+
+    function calcRates() {
+        const rc_rate = parseFloat(document.getElementById('rc_rate').value);
+        const max_rate = 200 * rc_rate; // 簡單 Expo 模型: 1.0 = 200度/s (不含 SuperRate)
+        // 為了模擬 FPV 的超大 rate，這裡做一個簡單非線性： y = x^3
+        const x = stick_percent / 100.0;
+        target_rate_deg = (x * 0.3 + Math.pow(x, 3) * 0.7) * (rc_rate * 800); // 1.0 時滿舵 800 deg/s
+        
+        document.getElementById('max_rate_val').innerText = (rc_rate * 800).toFixed(0);
+        document.getElementById('target_rate_display').innerText = target_rate_deg.toFixed(0) + " °/s";
+    }
+
+    function setStick(val) {
+        stick_percent = val;
+        document.getElementById('stick_cursor').style.left = (val / 2 + 50) + '%';
+        calcRates();
+        checkOvershootState(val);
+    }
+
+    // 拖動搖桿邏輯
+    function startDrag(e) { isDragging = true; drag(e); }
+    function endDrag() { isDragging = false; }
+    function drag(e) {
+        if (!isDragging) return;
+        const track = document.getElementById('stick_track');
+        const rect = track.getBoundingClientRect();
+        let x = e.clientX - rect.left;
+        let pct = (x / rect.width) * 200 - 100;
+        if (pct > 100) pct = 100;
+        if (pct < -100) pct = -100;
+        setStick(pct);
+    }
+
+    // --- UI 輔助 ---
+    function updateVal(id, val, unit) {
+        document.getElementById(id + '_val').innerText = val + unit;
+        if(id === 'thr') updatePhysicsParams();
+        if(id === 'lpf') {
+            // 更新 LPF 參數 (alpha)
+            const hz = parseFloat(val);
+            lpf_alpha = (2 * Math.PI * hz * dt_math) / (2 * Math.PI * hz * dt_math + 1);
+        }
+    }
+
+    // --- 分析指標 ---
+    let max_overshoot = 0;
+    let step_start_target = 0;
+    let in_step_test = false;
+
+    function checkOvershootState(new_stick) {
+        // 如果搖桿發生大於 30% 的劇烈變動，重置 Overshoot 計算
+        if (Math.abs(target_rate_deg - step_start_target) > 200) {
+            max_overshoot = 0;
+            step_start_target = target_rate_deg;
+            in_step_test = true;
+        }
+    }
+
+    // --- 物理引擎與模擬變數 ---
+    let isRunning = true;
+    let time = 0;
+    const dt_math = 0.001; // 1ms 運算
+    const update_rate = 16; // 約 60fps
+    let step_counter = 0;
+    const MAX_POINTS = 200; // 顯示範圍約 3.2 秒
+
+    // FPV 狀態
+    let current_rate = 0;      
+    let actual_motor_thrust = 0; 
+    let motor_time_constant = 0.015; // 馬達延遲
+    
+    // 物理慣性與油門曲線
+    let inertia_mult = 1.0; 
+    let thrust_mult = 1.0; // 根據油門決定推力反應能力
+    
+    function updatePhysicsParams() {
+        const weight = parseFloat(document.getElementById('weight_input').value);
+        inertia_mult = weight / 650.0;
+        if(inertia_mult < 0.1) inertia_mult = 0.1; 
+        
+        // 油門非線性：油門越高，馬達產生轉矩的能力越強 (簡單模擬)
+        const thr = parseFloat(document.getElementById('thr').value) / 100.0;
+        thrust_mult = 0.5 + (thr * 1.5); // 30%油門約 0.95，100%油門約 2.0
+    }
+
+    // PID 狀態
+    let integral = 0;
+    let prev_rate = 0;
+    let prev_sp = 0;
+    let lpf_d_term = 0; // D 項濾波後的值
+    let lpf_alpha = 0.3; // 預設 70Hz 在 1ms 的 alpha
+    let iae_accumulator = 0;
+
+    // 圖表資料
+    let tData = [], spData = [], pvData = [], motorData = [];
+    let pTermData = [], iTermData = [], dTermData = [], ffTermData = [];
+
+    // --- 圖表初始化 ---
+    Chart.defaults.font.family = 'monospace';
+    Chart.defaults.color = '#94a3b8';
+    const gridOptions = { color: '#1e293b', tickLength: 0 };
+
+    const ctxRate = document.getElementById('rateChart').getContext('2d');
+    const rateChart = new Chart(ctxRate, {
+        type: 'line',
+        data: {
+            labels: tData,
+            datasets: [
+                { label: 'Setpoint', data: spData, borderColor: '#cbd5e1', borderDash: [4,4], borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+                { label: 'Gyro', data: pvData, borderColor: '#ef4444', borderWidth: 2, pointRadius: 0, tension: 0.1 }
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: { legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 8 } } },
+            scales: { x: { grid: { display: false }, ticks: { display: false } }, y: { suggestedMin: -800, suggestedMax: 800, grid: gridOptions } }
+        }
+    });
+
+    const ctxMotor = document.getElementById('motorChart').getContext('2d');
+    const motorChart = new Chart(ctxMotor, {
+        type: 'line',
+        data: {
+            labels: tData,
+            datasets: [
+                { label: 'Total CV', data: motorData, borderColor: '#ffffff', borderWidth: 1.5, pointRadius: 0, tension: 0.1, fill: true, backgroundColor: 'rgba(255,255,255,0.05)' },
+                { label: 'P', data: pTermData, borderColor: '#eab308', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+                { label: 'I', data: iTermData, borderColor: '#ec4899', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+                { label: 'D', data: dTermData, borderColor: '#8b5cf6', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+                { label: 'FF', data: ffTermData, borderColor: '#14b8a6', borderWidth: 1.5, pointRadius: 0, tension: 0.1, hidden: false }
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: { legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 8 } } },
+            scales: { x: { grid: { display: false }, ticks: { display: false } }, y: { suggestedMin: -100, suggestedMax: 100, grid: gridOptions } }
+        }
+    });
+
+    // --- 核心運算 ---
+    function physicsLoop() {
+        if (!isRunning) return;
+
+        let sp = target_rate_deg;
+        let Kp = parseFloat(document.getElementById('kp').value) * 0.01;
+        let Ki = parseFloat(document.getElementById('ki').value) * 0.05;
+        let Kd = parseFloat(document.getElementById('kd').value) * 0.0005;
+        let Kff = parseFloat(document.getElementById('ff').value) * 0.005;
+        let wind_noise = parseFloat(document.getElementById('wind').value) * 0.1;
+
+        // 1. PID 計算
+        let error = sp - current_rate;
+        iae_accumulator += Math.abs(error) * dt_math;
+
+        // I 項 (Anti-windup)
+        integral += error * dt_math;
+        const i_limit = 100 / (Ki || 1); 
+        if (integral > i_limit) integral = i_limit;
+        if (integral < -i_limit) integral = -i_limit;
+
+        // D 項 (對 Gyro 微分 + 一階低通濾波)
+        let raw_derivative = (current_rate - prev_rate) / dt_math;
+        lpf_d_term = lpf_d_term + lpf_alpha * (raw_derivative - lpf_d_term);
+
+        // FF 項 (對 Setpoint 微分)
+        let setpoint_derivative = (sp - prev_sp) / dt_math;
+
+        let P_out = Kp * error;
+        let I_out = Ki * integral;
+        let D_out = -Kd * lpf_d_term; // D 抵抗運動，故為負 
+        let FF_out = Kff * setpoint_derivative;
+
+        let pid_sum = P_out + I_out + D_out + FF_out;
+        
+        // PID Clip
+        if (pid_sum > 100) pid_sum = 100;
+        if (pid_sum < -100) pid_sum = -100;
+
+        // 2. 馬達物理延遲
+        actual_motor_thrust += (pid_sum - actual_motor_thrust) * (dt_math / motor_time_constant);
+
+        // 3. 機身動態模型 
+        let aero_drag = 0.0005 * current_rate * Math.abs(current_rate); 
+        let ambient_wind = (Math.random() - 0.5) * wind_noise * 50; 
+        
+        // 總扭力 = (馬達推力 * 油門效應) - 阻力 + 亂流
+        let total_torque = actual_motor_thrust * 60 * thrust_mult - aero_drag + ambient_wind;
+        
+        let angular_accel = total_torque / inertia_mult;
+        current_rate += angular_accel * dt_math;
+
+        // 4. 計算 Overshoot
+        if (in_step_test && step_start_target !== 0) {
+            // 如果目標大於 0，檢查超過目標的量
+            if (step_start_target > 0 && current_rate > step_start_target) {
+                let os = ((current_rate - step_start_target) / step_start_target) * 100;
+                if (os > max_overshoot) max_overshoot = os;
+            } else if (step_start_target < 0 && current_rate < step_start_target) {
+                let os = ((current_rate - step_start_target) / step_start_target) * 100; // 兩負相除為正
+                if (os > max_overshoot) max_overshoot = os;
+            }
+        }
+
+        prev_rate = current_rate;
+        prev_sp = sp;
+        time += dt_math;
+
+        // 5. 更新介面
+        step_counter++;
+        if (step_counter >= update_rate) {
+            step_counter = 0;
+            updateUI(sp, P_out, I_out, D_out, FF_out, pid_sum);
+        }
+    }
+
+    function updateUI(sp, p, i, d, ff, total) {
+        // 數字更新
+        document.getElementById('sp_display').innerText = sp.toFixed(0) + " ";
+        document.getElementById('sp_display').innerHTML += '<span class="metric-unit">°/s</span>';
+        
+        document.getElementById('pv_display').innerText = current_rate.toFixed(0) + " ";
+        document.getElementById('pv_display').innerHTML += '<span class="metric-unit">°/s</span>';
+        
+        document.getElementById('cv_display').innerText = actual_motor_thrust.toFixed(0) + " ";
+        document.getElementById('cv_display').innerHTML += '<span class="metric-unit">%</span>';
+        
+        document.getElementById('iae_display').innerText = (iae_accumulator / (time || 1)).toFixed(1);
+        
+        document.getElementById('os_display').innerText = max_overshoot.toFixed(1) + " ";
+        document.getElementById('os_display').innerHTML += '<span class="metric-unit">%</span>';
+
+        // PID 佔比條 (絕對值計算)
+        let ap = Math.abs(p), ai = Math.abs(i), ad = Math.abs(d), aff = Math.abs(ff);
+        let sum_abs = ap + ai + ad + aff;
+        if (sum_abs > 0) {
+            document.getElementById('bar_p').style.width = (ap / sum_abs * 100) + '%';
+            document.getElementById('bar_i').style.width = (ai / sum_abs * 100) + '%';
+            document.getElementById('bar_d').style.width = (ad / sum_abs * 100) + '%';
+            document.getElementById('bar_ff').style.width = (aff / sum_abs * 100) + '%';
+            document.getElementById('bar_p').innerText = ap > 10 ? 'P' : '';
+            document.getElementById('bar_d').innerText = ad > 10 ? 'D' : '';
+            document.getElementById('bar_ff').innerText = aff > 10 ? 'FF' : '';
+        }
+        document.getElementById('pid_sum_display').innerText = 'Output: ' + total.toFixed(1) + '%';
+
+        // 圖表更新
+        tData.push(time.toFixed(2));
+        spData.push(sp);
+        pvData.push(current_rate);
+        motorData.push(actual_motor_thrust);
+        pTermData.push(p); iTermData.push(i); dTermData.push(d); ffTermData.push(ff);
+
+        if (tData.length > MAX_POINTS) {
+            tData.shift(); spData.shift(); pvData.shift(); motorData.shift();
+            pTermData.shift(); iTermData.shift(); dTermData.shift(); ffTermData.shift();
+        }
+
+        rateChart.update(); motorChart.update();
+    }
+
+    function toggleSim() {
+        isRunning = !isRunning;
+        const btn = document.getElementById('toggleBtn');
+        btn.innerHTML = isRunning ? '⏸️ 暫停' : '▶️ 繼續';
+    }
+
+    function resetSim() {
+        time = 0; current_rate = 0; actual_motor_thrust = 0; integral = 0; prev_rate = 0; prev_sp = 0; lpf_d_term = 0; iae_accumulator = 0; max_overshoot = 0;
+        tData.length = 0; spData.length = 0; pvData.length = 0; motorData.length = 0;
+        pTermData.length = 0; iTermData.length = 0; dTermData.length = 0; ffTermData.length = 0;
+        setStick(0);
+        rateChart.update(); motorChart.update();
+    }
+
+    // 初始化
+    updateVal('lpf', 70, '');
+    loadProfile();
+    setInterval(physicsLoop, 1);
+
+</script>
+</body>
+</html>
